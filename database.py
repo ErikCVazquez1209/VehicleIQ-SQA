@@ -5,7 +5,7 @@ Provides ORM models and database operations using SQLAlchemy for SQLite and Post
 
 from datetime import datetime
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import pandas as pd
 from sqlalchemy import create_engine, Column, Integer, Float, String, DateTime, Index
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -115,11 +115,15 @@ def save_telemetry_df(df: pd.DataFrame) -> int:
     finally:
         session.close()
 
-def get_recent_telemetry(limit: int = 100) -> List[Dict[str, Any]]:
-    """Retrieve recent telemetry records from database."""
+def get_recent_telemetry(limit: int = 100, vehicle_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Retrieve recent records, optionally restricted to one vehicle."""
     session = SessionLocal()
     try:
-        query = session.query(OBDTelemetry).order_by(OBDTelemetry.timestamp.desc()).limit(limit)
+        query = session.query(OBDTelemetry)
+        if vehicle_id is not None:
+            query = query.filter(OBDTelemetry.vehicle_id == vehicle_id)
+        query = query.order_by(OBDTelemetry.timestamp.desc(), OBDTelemetry.id.desc()).limit(limit)
         return [record.to_dict() for record in query.all()]
     finally:
         session.close()
+

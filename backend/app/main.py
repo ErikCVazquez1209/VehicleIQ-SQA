@@ -206,10 +206,18 @@ def get_health_score(vehicle_id: str = Query("VEHICLE_001", description="Target 
 # --- Recent Telemetry API for Dashboard Charts ---
 
 @app.get("/api/v1/telemetry/recent")
-def get_recent_telemetry_history(limit: int = Query(30, ge=5, le=200)):
-    """Returns recent time-series telemetry for rendering dashboard gauges and charts."""
-    records = get_recent_telemetry(limit=limit)
-    return {"status": "success", "count": len(records), "data": list(reversed(records))}
+def get_recent_telemetry_history(
+    limit: int = Query(30, ge=5, le=200),
+    vehicle_id: str = Query("VEHICLE_001", min_length=1, max_length=50),
+):
+    """Return chronological telemetry only for the requested vehicle."""
+    records = get_recent_telemetry(limit=limit, vehicle_id=vehicle_id)
+    return {
+        "status": "success",
+        "vehicle_id": vehicle_id,
+        "count": len(records),
+        "data": list(reversed(records)),
+    }
 
 # --- Printable Mechanic Report Endpoint ---
 

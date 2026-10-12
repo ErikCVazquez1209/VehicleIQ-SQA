@@ -36,12 +36,13 @@ interface HealthData {
   timestamp: string;
 }
 interface TelemetryPoint {
-  rpm: number;
-  speed_kph: number;
-  coolant_temp_c: number;
-  battery_voltage: number;
-  throttle_pos_pct: number;
-  maf_g_s: number;
+  vehicle_id: string;
+  rpm: number | null;
+  speed_kph: number | null;
+  coolant_temp_c: number | null;
+  battery_voltage: number | null;
+  throttle_pos_pct: number | null;
+  maf_g_s: number | null;
 }
 interface ChatMessage {
   sender: 'user' | 'ai';
@@ -256,14 +257,7 @@ export default function LuxuryRedDashboard() {
     }
   };
   const [health, setHealth] = useState<HealthData>(vehicleHealthMap['VEHICLE_001']);
-  const [telemetry, setTelemetry] = useState<TelemetryPoint>({
-    rpm: 1850,
-    speed_kph: 85,
-    coolant_temp_c: 91,
-    battery_voltage: 14.2,
-    throttle_pos_pct: 24,
-    maf_g_s: 8.4
-  });
+  const [telemetry, setTelemetry] = useState<TelemetryPoint | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'checking' | 'online' | 'error'>('checking');
   const [lastSuccessfulCheck, setLastSuccessfulCheck] = useState<string | null>(null);
   const [hasTelemetryData, setHasTelemetryData] = useState(false);
@@ -292,6 +286,8 @@ export default function LuxuryRedDashboard() {
     setConnectionStatus('checking');
     setLastSuccessfulCheck(null);
     setHasTelemetryData(false);
+    setTelemetry(null);
+    setTelemetryFromApi(false);
     setHealthFromApi(false);
     setSelectedVehicle(carId);
     if (vehicleHealthMap[carId]) {
@@ -339,12 +335,17 @@ export default function LuxuryRedDashboard() {
         if (!healthRes.ok) throw new Error(`Health API: ${healthRes.status}`);
         const healthJson = await healthRes.json();
         const telemRes = await fetch(
-          `${API_BASE_URL}/api/v1/telemetry/recent?limit=5`,
+          `${API_BASE_URL}/api/v1/telemetry/recent?limit=5&vehicle_id=${encodeURIComponent(selectedVehicle)}`,
           { signal: controller.signal, cache: 'no-store' }
         );
         if (!telemRes.ok) throw new Error(`Telemetry API: ${telemRes.status}`);
         const telemJson = await telemRes.json();
         if (!Array.isArray(telemJson.data)) throw new Error('Invalid telemetry response');
+        if (
+          healthJson.vehicle_id !== selectedVehicle ||
+          telemJson.vehicle_id !== selectedVehicle ||
+          telemJson.data.some((point: TelemetryPoint) => point.vehicle_id !== selectedVehicle)
+        ) throw new Error('Response does not match the selected vehicle');
         if (!active) return;
         setHealth(healthJson);
         setHealthFromApi(true);
@@ -353,6 +354,9 @@ export default function LuxuryRedDashboard() {
           const currentTelem = telemJson.data[telemJson.data.length - 1];
           setTelemetry(currentTelem);
           setTelemetryFromApi(true);
+        } else {
+          setTelemetry(null);
+          setTelemetryFromApi(false);
         }
         setLastSuccessfulCheck(new Date().toLocaleTimeString());
         setConnectionStatus('online');
@@ -437,7 +441,9 @@ export default function LuxuryRedDashboard() {
         };
         aiText = `⚡ **Diagnostic Alert**: ${solutionObj.title}\n${solutionObj.explanation}`;
       } else {
-        aiText = `🔧 **AI Diagnostic Analysis**: No critical hardware fault detected for "${query}". Your overall vehicle health is ${health.overall_health_score}%. Sensor telemetry (RPM: ${Math.round(telemetry.rpm)}, Temp: ${Math.round(telemetry.coolant_temp_c)}°C, Voltage: ${telemetry.battery_voltage}V) operating normally.`;
+        aiText = telemetry && telemetry.rpm != null && telemetry.coolant_temp_c != null && telemetry.battery_voltage != null
+          ? `🔧 **AI Diagnostic Analysis**: No critical hardware fault detected for "${query}". Your overall vehicle health is ${health.overall_health_score}%. Sensor telemetry (RPM: ${Math.round(telemetry.rpm)}, Temp: ${Math.round(telemetry.coolant_temp_c)}°C, Voltage: ${telemetry.battery_voltage}V) operating normally.`
+          : 'No hay una lectura completa de telemetría disponible para el vehículo seleccionado.';
       }
       setMessages(prev => [...prev, {
         sender: 'ai',
@@ -492,13 +498,13 @@ export default function LuxuryRedDashboard() {
           <>
             <p>API conectada. Última consulta exitosa: {lastSuccessfulCheck}.</p>
             {!hasTelemetryData && (
-              <p>No hay telemetría almacenada. Los instrumentos muestran valores anteriores o de demostración.</p>
+              <p>No hay telemetría almacenada para el vehículo seleccionado. Los instrumentos muestran —.</p>
             )}
           </>
         )}
         <p style={{ marginTop: '8px', fontSize: '13px' }}>
           Salud: {healthFromApi ? 'estimación recibida de la API' : 'valor de demostración'}.
-          {' '}Instrumentos: {telemetryFromApi ? 'última lectura recibida de la API' : 'valores de demostración'}.
+          {' '}Instrumentos: {telemetryFromApi ? 'última lectura recibida de la API para este vehículo' : 'sin lectura para el vehículo seleccionado'}.
         </p>
       </div>
       {/* --- Top Red Racing Header --- */}
@@ -620,7 +626,7 @@ export default function LuxuryRedDashboard() {
           <span style={{ fontSize: '11px', color: '#a1a1aa', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700 }}>TACHOMETER (ENGINE RPM)</span>
           <div style={{ position: 'relative', margin: '20px auto 14px', width: '140px', height: '140px', borderRadius: '50%', background: 'radial-gradient(circle, #000 60%, rgba(255, 8, 68, 0.1) 100%)', border: '3px solid rgba(255, 8, 68, 0.5)', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', boxShadow: '0 0 30px rgba(255, 8, 68, 0.25)' }}>
             <span style={{ fontSize: '32px', fontWeight: 900, color: '#ff0844' }}>
-              {Math.round(telemetry.rpm)}
+              {telemetry?.rpm != null ? Math.round(telemetry.rpm) : '—'}
             </span>
             <span style={{ fontSize: '11px', color: '#a1a1aa', fontWeight: 700 }}>RPM</span>
           </div>
@@ -631,7 +637,7 @@ export default function LuxuryRedDashboard() {
           <span style={{ fontSize: '11px', color: '#a1a1aa', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700 }}>SPEEDOMETER (KM/H)</span>
           <div style={{ position: 'relative', margin: '20px auto 14px', width: '140px', height: '140px', borderRadius: '50%', background: 'radial-gradient(circle, #000 60%, rgba(0, 242, 254, 0.1) 100%)', border: '3px solid rgba(0, 242, 254, 0.4)', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', boxShadow: '0 0 30px rgba(0, 242, 254, 0.2)' }}>
             <span style={{ fontSize: '32px', fontWeight: 900, color: '#00f2fe' }}>
-              {Math.round(telemetry.speed_kph)}
+              {telemetry?.speed_kph != null ? Math.round(telemetry.speed_kph) : '—'}
             </span>
             <span style={{ fontSize: '11px', color: '#a1a1aa', fontWeight: 700 }}>KM/H</span>
           </div>
@@ -640,16 +646,16 @@ export default function LuxuryRedDashboard() {
         {/* Thermal Engine Temp */}
         <div className="luxury-glass" style={{ padding: '24px', textAlign: 'center', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
           <span style={{ fontSize: '11px', color: '#a1a1aa', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700 }}>COOLANT THERMAL TEMP</span>
-          <div style={{ fontSize: '38px', fontWeight: 900, color: telemetry.coolant_temp_c > 100 ? '#ff0844' : '#43e97b', margin: '14px 0' }}>
-            {Math.round(telemetry.coolant_temp_c)}°C
+          <div style={{ fontSize: '38px', fontWeight: 900, color: telemetry?.coolant_temp_c != null && telemetry.coolant_temp_c > 100 ? '#ff0844' : '#43e97b', margin: '14px 0' }}>
+            {telemetry?.coolant_temp_c != null ? `${Math.round(telemetry.coolant_temp_c)}°C` : '—'}
           </div>
           <span style={{ fontSize: '12px', color: '#a1a1aa' }}>Optimal Range: 85°C - 95°C</span>
         </div>
         {/* Battery & Charging Voltage */}
         <div className="luxury-glass" style={{ padding: '24px', textAlign: 'center', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
           <span style={{ fontSize: '11px', color: '#a1a1aa', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700 }}>ALTERNATOR / BUS VOLTAGE</span>
-          <div style={{ fontSize: '38px', fontWeight: 900, color: telemetry.battery_voltage < 12.4 ? '#ff0844' : '#ff758c', margin: '14px 0' }}>
-            {telemetry.battery_voltage} V
+          <div style={{ fontSize: '38px', fontWeight: 900, color: telemetry?.battery_voltage != null && telemetry.battery_voltage < 12.4 ? '#ff0844' : '#ff758c', margin: '14px 0' }}>
+            {telemetry?.battery_voltage != null ? `${telemetry.battery_voltage} V` : '—'}
           </div>
           <span style={{ fontSize: '12px', color: '#a1a1aa' }}>Target: 13.8V - 14.4V</span>
         </div>
