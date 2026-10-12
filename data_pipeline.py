@@ -57,14 +57,27 @@ class OBDDataPipeline:
         # 2. Impute missing timestamps with current UTC
         df["timestamp"] = df["timestamp"].fillna(pd.Timestamp.utcnow())
 
+        # Resolve the vehicle before imputing any sensor reading.
+        if "vehicle_id" not in df.columns:
+            df["vehicle_id"] = "VEHICLE_001"
+        else:
+            df["vehicle_id"] = df["vehicle_id"].fillna("VEHICLE_001")
+
+        # Previous readings must be previous in time, not in input order.
+        df = df.sort_values(by="timestamp", kind="mergesort").reset_index(drop=True)
+
         # 3. Numeric conversion and outlier clipping according to physical ranges
         for col, (min_val, max_val) in VALIDATION_RANGES.items():
             if col in df.columns:
                 # Force numeric type
                 df[col] = pd.to_numeric(df[col], errors="coerce")
                 
-                # Impute missing values with forward fill first, then default value
-                df[col] = df[col].ffill().fillna(DEFAULT_IMPUTE_VALUES[col])
+                # Reuse only earlier readings from this vehicle within this batch.
+                df[col] = (
+                    df.groupby("vehicle_id", sort=False)[col]
+                    .ffill()
+                    .fillna(DEFAULT_IMPUTE_VALUES[col])
+                )
 
                 # Clip sensor readings within physically plausible bounds
                 df[col] = df[col].clip(lower=min_val, upper=max_val)
@@ -73,19 +86,11 @@ class OBDDataPipeline:
                 df[col] = DEFAULT_IMPUTE_VALUES[col]
 
         # 4. Fill missing string metadata
-        if "vehicle_id" not in df.columns:
-            df["vehicle_id"] = "VEHICLE_001"
-        else:
-            df["vehicle_id"] = df["vehicle_id"].fillna("VEHICLE_001")
-
         if "scenario" not in df.columns:
             df["scenario"] = "normal"
         else:
             df["scenario"] = df["scenario"].fillna("normal")
 
-        # Sort cleanly by timestamp
-        df = df.sort_values(by="timestamp").reset_index(drop=True)
-        
         logger.debug(f"Cleaned batch of {len(df)} OBD records.")
         return df
 
