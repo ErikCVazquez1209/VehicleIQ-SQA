@@ -134,6 +134,24 @@ def get_vehicle_list():
     """Returns list of registered vehicle driver profiles."""
     return {"status": "success", "vehicles": VEHICLE_PROFILES}
 
+def get_declared_telemetry_origin(records: List[Dict[str, Any]]) -> str:
+    """Classify existing scenario metadata; this does not verify physical hardware."""
+    simulated_scenarios = {
+        "city_driving", "highway_cruising", "aggressive_sport", "thermal_overheat",
+    }
+    origins = set()
+    for record in records:
+        scenario = record.get("scenario")
+        if scenario in simulated_scenarios:
+            origins.add("simulated")
+        elif scenario == "live_driving":
+            origins.add("live")
+        else:
+            origins.add("unknown")
+    if not origins or "unknown" in origins:
+        return "unknown"
+    return next(iter(origins)) if len(origins) == 1 else "mixed"
+
 # --- Real-Time Component Health & Driving Behavior Endpoint ---
 
 @app.get("/api/v1/health-score", response_model=HealthScoreResponse)
@@ -143,31 +161,48 @@ def get_health_score(vehicle_id: str = Query("VEHICLE_001", description="Target 
     extracts sliding-window features, runs ML driving style classifier + LSTM component degradation models,
     and returns plain-language diagnostic alerts.
     """
-    from obd_simulator import OBDSimulator
-    
-    # Select target scenario based on vehicle profile
-    target_scenario = "city_driving"
-    for v in VEHICLE_PROFILES:
-        if v["vehicle_id"] == vehicle_id:
-            target_scenario = v["scenario"]
+    required_samples = feature_extractor.window_size
+    step_size = 5
+    history_limit = required_samples + (health_predictor.sequence_length - 1) * step_size
+    records = get_recent_telemetry(limit=history_limit, vehicle_id=vehicle_id)
+    sample_count = len(records)
+    if sample_count < required_samples:
+        raise HTTPException(
+            status_code=404 if sample_count == 0 else 422,
+            detail={
+                "code": "NO_TELEMETRY" if sample_count == 0 else "INSUFFICIENT_TELEMETRY",
+                "message": (
+                    f"No hay telemetría almacenada para {vehicle_id}."
+                    if sample_count == 0 else
+                    f"Hay {sample_count} muestras para {vehicle_id}; se requieren al menos {required_samples}."
+                ),
+                "vehicle_id": vehicle_id,
+                "sample_count": sample_count,
+                "required_samples": required_samples,
+            },
+        )
 
-    # Generate telemetry for requested vehicle profile
-    sim = OBDSimulator(vehicle_id=vehicle_id, scenario=target_scenario)
-    raw_records = [sim.generate_sample() for _ in range(40)]
-
-    # Clean and structure telemetry into DataFrame
-    df_raw = pd.DataFrame(raw_records)
-    cleaned_df = pipeline.clean_batch(df_raw.to_dict(orient="records"))
+    cleaned_df = pipeline.clean_batch(records)
 
     # 3. Extract behavioral features
-    feat_df = feature_extractor.transform_dataframe(cleaned_df)
+    feat_df = feature_extractor.transform_dataframe(cleaned_df, step_size=step_size)
+    # Include the newest reading even when the batch ends between sliding-window steps.
+    if (sample_count - required_samples) % step_size:
+        latest_window = cleaned_df.tail(required_samples)
+        latest_features = feature_extractor.extract_window_features(latest_window)
+        feat_df = pd.concat([feat_df, pd.DataFrame([latest_features])], ignore_index=True)
     latest_feature_dict = feat_df.iloc[-1].to_dict()
 
     # 4. Predict driving style
     style_res = style_classifier.predict(latest_feature_dict)
 
     # 5. Predict component degradation
-    raw_health_res = health_predictor.predict_sequence(feat_df)
+    if len(feat_df) >= health_predictor.sequence_length:
+        raw_health_res = health_predictor.predict_sequence(feat_df)
+    else:
+        # A short observed history can support heuristics, but not a fabricated LSTM sequence.
+        raw_health_res = health_predictor.calculate_heuristic_degradation(feat_df)
+        raw_health_res["model_used"] = "Physics_Degradation_Estimator"
     comp_scores = {
         "brake_health": float(raw_health_res.get("brake_health", 100.0)),
         "engine_health": float(raw_health_res.get("engine_health", 100.0)),
@@ -201,6 +236,12 @@ def get_health_score(vehicle_id: str = Query("VEHICLE_001", description="Target 
         component_scores=comp_scores,
         plain_language_alerts=alerts,
         timestamp=datetime.utcnow().isoformat(),
+        data_source="stored_telemetry",
+        telemetry_origin=get_declared_telemetry_origin(records),
+        origin_basis="scenario_metadata",
+        sample_count=sample_count,
+        last_sample_timestamp=cleaned_df.iloc[-1]["timestamp"].isoformat(),
+        model_used=raw_health_res["model_used"],
     )
 
 # --- Recent Telemetry API for Dashboard Charts ---

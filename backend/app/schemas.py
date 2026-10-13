@@ -3,7 +3,7 @@ VehicleIQ Pydantic Schemas
 Data contracts for Auth, Ingestion, Component Health Scores, Solutions, and Mechanic Reports.
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Literal
 from pydantic import BaseModel, Field
 from datetime import datetime
 
@@ -66,6 +66,12 @@ class HealthScoreResponse(BaseModel):
     component_scores: Dict[str, float]
     plain_language_alerts: List[ProblemSolutionSchema]
     timestamp: str
+    data_source: Literal["stored_telemetry"]
+    telemetry_origin: Literal["simulated", "live", "mixed", "unknown"]
+    origin_basis: Literal["scenario_metadata"]
+    sample_count: int
+    last_sample_timestamp: str
+    model_used: str
 
 # --- Mechanic Report Schema ---
 class MechanicReportResponse(BaseModel):
