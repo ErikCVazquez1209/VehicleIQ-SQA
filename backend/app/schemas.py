@@ -3,18 +3,32 @@ VehicleIQ Pydantic Schemas
 Data contracts for Auth, Ingestion, Component Health Scores, Solutions, and Mechanic Reports.
 """
 
-from typing import List, Dict, Any, Optional, Literal
-from pydantic import BaseModel, Field
+from typing import List, Dict, Any, Optional, Literal, Annotated
+from pydantic import BaseModel, Field, EmailStr, StringConstraints, field_validator
 from datetime import datetime
 
 # --- Auth Schemas ---
+Username = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=3, max_length=50),
+]
+MIN_PASSWORD_LENGTH = 12
+MAX_PASSWORD_LENGTH = 128
+
 class UserRegister(BaseModel):
-    username: str
-    email: str
-    password: str
+    username: Username
+    email: EmailStr
+    password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
+
+    @field_validator("password")
+    @classmethod
+    def reject_blank_password(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Password must contain at least one non-whitespace character")
+        # Preserve the exact password, including intentional spaces.
+        return value
 
 class UserLogin(BaseModel):
-    username: str
+    username: Username
     password: str
 
 class TokenResponse(BaseModel):
