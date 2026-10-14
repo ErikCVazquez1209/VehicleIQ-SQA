@@ -1,5 +1,6 @@
 'use client';
 import React, { useState, useEffect, useRef } from 'react';
+import { getComponentStatus } from '../lib/component-status.mjs';
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 interface VehicleProfile {
   vehicle_id: string;
@@ -34,6 +35,12 @@ interface HealthData {
   };
   plain_language_alerts: ProblemSolution[];
   timestamp: string;
+  data_source: 'stored_telemetry';
+  telemetry_origin: 'simulated' | 'live' | 'mixed' | 'unknown';
+  origin_basis: 'scenario_metadata';
+  sample_count: number;
+  last_sample_timestamp: string;
+  model_used: string;
 }
 interface TelemetryPoint {
   vehicle_id: string;
@@ -173,90 +180,8 @@ export default function LuxuryRedDashboard() {
   const [selectedVehicle, setSelectedVehicle] = useState<string>('VEHICLE_001');
   // Red Racing Concept Showcase Tab State (Option 1, Option 2, Option 3)
   const [activeConceptTab, setActiveConceptTab] = useState<'hud' | 'concierge' | 'mobile'>('hud');
-  // Vehicle-specific mock health fallbacks
-  const vehicleHealthMap: Record<string, HealthData> = {
-    'VEHICLE_001': {
-      vehicle_id: 'VEHICLE_001',
-      overall_health_score: 96,
-      driving_style: 'Gentle',
-      driving_behavior_score: 94,
-      component_scores: { brake_health: 95, engine_health: 96, battery_health: 98 },
-      plain_language_alerts: [
-        {
-          component: 'Battery',
-          severity: 'INFO',
-          title: 'Routine Battery Maintenance Check',
-          explanation: 'All battery cells operating smoothly at 14.2V nominal voltage.',
-          solution_title: '12V Battery Terminal Inspection & Cleaning',
-          diy_fix_steps: [
-            'Inspect battery terminal clamps for light oxidation buildup.',
-            'Clean posts with baking soda water solution and wire brush.',
-            'Apply dielectric grease to protect contacts against humidity.'
-          ],
-          estimated_cost: '$15 - $35 / ₹500 - ₹1,200',
-          urgency: 'Routine',
-          difficulty: 'Easy',
-          parts_needed: ['Terminal Cleaner Brush', 'Dielectric Contact Grease']
-        }
-      ],
-      timestamp: new Date().toISOString()
-    },
-    'VEHICLE_002': {
-      vehicle_id: 'VEHICLE_002',
-      overall_health_score: 64,
-      driving_style: 'Aggressive',
-      driving_behavior_score: 58,
-      component_scores: { brake_health: 42, engine_health: 78, battery_health: 88 },
-      plain_language_alerts: [
-        {
-          component: 'Brake System',
-          severity: 'CRITICAL',
-          title: 'Severe Carbon Ceramic Brake Pad Friction Wear',
-          explanation: 'Frequent hard braking cycles detected (>14 hard stops/hr). Brake pad friction thickness critically below 3mm safety margin.',
-          solution_title: 'Brake Rotor & High-Performance Pad Replacement',
-          diy_fix_steps: [
-            'Safely jack up vehicle and secure on heavy-duty jack stands.',
-            'Unbolt brake caliper slider pins and detach worn pad sensors.',
-            'Compress caliper piston using C-clamp and seat fresh ceramic brake pads.',
-            'Torque caliper guide pins to 35 ft-lbs and perform brake pedal bed-in burnishing.'
-          ],
-          estimated_cost: '$180 - $420 / ₹6,000 - ₹14,000',
-          urgency: 'Immediate Safety Action Required',
-          difficulty: 'Intermediate',
-          parts_needed: ['Carbon-Ceramic Brake Pad Kit', 'DOT-4 Brake Fluid', 'Caliper Grease']
-        }
-      ],
-      timestamp: new Date().toISOString()
-    },
-    'VEHICLE_003': {
-      vehicle_id: 'VEHICLE_003',
-      overall_health_score: 48,
-      driving_style: 'Overheat Thermal Anomaly',
-      driving_behavior_score: 42,
-      component_scores: { brake_health: 82, engine_health: 38, battery_health: 76 },
-      plain_language_alerts: [
-        {
-          component: 'Engine Cooling',
-          severity: 'CRITICAL',
-          title: 'Coolant Thermal Runaway (108°C Overheat Warning)',
-          explanation: 'Engine coolant temperature breached 108°C thermal threshold for 45+ consecutive seconds. Severe risk of head gasket warpage.',
-          solution_title: 'Coolant System Flush & Radiator Fan Relay Replacement',
-          diy_fix_steps: [
-            'Allow engine block to cool down completely to prevent steam burns.',
-            'Open radiator drain petcock into catch basin and flush with distilled water.',
-            'Inspect radiator fan relay fuse and swap high-stage cooling fan relay.',
-            'Refill system with 50/50 OAT Coolant and bleed air bubbles using funnel kit.'
-          ],
-          estimated_cost: '$85 - $190 / ₹2,800 - ₹6,500',
-          urgency: 'Critical Engine Risk',
-          difficulty: 'Intermediate',
-          parts_needed: ['50/50 OAT Engine Coolant', 'Radiator Fan Relay Fuse', 'Coolant Bleeder Funnel']
-        }
-      ],
-      timestamp: new Date().toISOString()
-    }
-  };
-  const [health, setHealth] = useState<HealthData>(vehicleHealthMap['VEHICLE_001']);
+  const [health, setHealth] = useState<HealthData | null>(null);
+  const [healthIssue, setHealthIssue] = useState<string | null>(null);
   const [telemetry, setTelemetry] = useState<TelemetryPoint | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'checking' | 'online' | 'error'>('checking');
   const [lastSuccessfulCheck, setLastSuccessfulCheck] = useState<string | null>(null);
@@ -290,9 +215,8 @@ export default function LuxuryRedDashboard() {
     setTelemetryFromApi(false);
     setHealthFromApi(false);
     setSelectedVehicle(carId);
-    if (vehicleHealthMap[carId]) {
-      setHealth(vehicleHealthMap[carId]);
-    }
+    setHealth(null);
+    setHealthIssue(null);
   };
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -328,12 +252,6 @@ export default function LuxuryRedDashboard() {
       requestController = controller;
       const timeout = setTimeout(() => controller.abort(), 8000);
       try {
-        const healthRes = await fetch(
-          `${API_BASE_URL}/api/v1/health-score?vehicle_id=${selectedVehicle}`,
-          { signal: controller.signal, cache: 'no-store' }
-        );
-        if (!healthRes.ok) throw new Error(`Health API: ${healthRes.status}`);
-        const healthJson = await healthRes.json();
         const telemRes = await fetch(
           `${API_BASE_URL}/api/v1/telemetry/recent?limit=5&vehicle_id=${encodeURIComponent(selectedVehicle)}`,
           { signal: controller.signal, cache: 'no-store' }
@@ -342,13 +260,10 @@ export default function LuxuryRedDashboard() {
         const telemJson = await telemRes.json();
         if (!Array.isArray(telemJson.data)) throw new Error('Invalid telemetry response');
         if (
-          healthJson.vehicle_id !== selectedVehicle ||
           telemJson.vehicle_id !== selectedVehicle ||
           telemJson.data.some((point: TelemetryPoint) => point.vehicle_id !== selectedVehicle)
         ) throw new Error('Response does not match the selected vehicle');
         if (!active) return;
-        setHealth(healthJson);
-        setHealthFromApi(true);
         setHasTelemetryData(telemJson.data.length > 0);
         if (telemJson.data.length > 0) {
           const currentTelem = telemJson.data[telemJson.data.length - 1];
@@ -357,6 +272,32 @@ export default function LuxuryRedDashboard() {
         } else {
           setTelemetry(null);
           setTelemetryFromApi(false);
+        }
+        const healthRes = await fetch(
+          `${API_BASE_URL}/api/v1/health-score?vehicle_id=${encodeURIComponent(selectedVehicle)}`,
+          { signal: controller.signal, cache: 'no-store' }
+        );
+        const healthJson = await healthRes.json();
+        if (!active) return;
+        if (!healthRes.ok) {
+          const detail = healthJson.detail;
+          if (
+            (healthRes.status === 404 || healthRes.status === 422) &&
+            ['NO_TELEMETRY', 'INSUFFICIENT_TELEMETRY'].includes(detail?.code)
+          ) {
+            setHealth(null);
+            setHealthFromApi(false);
+            setHealthIssue(detail.message);
+          } else {
+            throw new Error(`Health API: ${healthRes.status}`);
+          }
+        } else {
+          if (healthJson.vehicle_id !== selectedVehicle) {
+            throw new Error('Health response does not match the selected vehicle');
+          }
+          setHealth(healthJson);
+          setHealthFromApi(true);
+          setHealthIssue(null);
         }
         setLastSuccessfulCheck(new Date().toLocaleTimeString());
         setConnectionStatus('online');
@@ -441,9 +382,9 @@ export default function LuxuryRedDashboard() {
         };
         aiText = `⚡ **Diagnostic Alert**: ${solutionObj.title}\n${solutionObj.explanation}`;
       } else {
-        aiText = telemetry && telemetry.rpm != null && telemetry.coolant_temp_c != null && telemetry.battery_voltage != null
+        aiText = health && telemetry && telemetry.rpm != null && telemetry.coolant_temp_c != null && telemetry.battery_voltage != null
           ? `🔧 **AI Diagnostic Analysis**: No critical hardware fault detected for "${query}". Your overall vehicle health is ${health.overall_health_score}%. Sensor telemetry (RPM: ${Math.round(telemetry.rpm)}, Temp: ${Math.round(telemetry.coolant_temp_c)}°C, Voltage: ${telemetry.battery_voltage}V) operating normally.`
-          : 'No hay una lectura completa de telemetría disponible para el vehículo seleccionado.';
+          : 'No hay una evaluación de salud y telemetría completas para el vehículo seleccionado.';
       }
       setMessages(prev => [...prev, {
         sender: 'ai',
@@ -466,6 +407,9 @@ export default function LuxuryRedDashboard() {
     }
   };
   const activeCar = garage.find(c => c.vehicle_id === selectedVehicle) || garage[0];
+  const brakeStatus = getComponentStatus('brake', health?.component_scores?.brake_health, health?.plain_language_alerts);
+  const engineStatus = getComponentStatus('engine', health?.component_scores?.engine_health, health?.plain_language_alerts);
+  const batteryStatus = getComponentStatus('battery', health?.component_scores?.battery_health, health?.plain_language_alerts);
   return (
     <div style={{ minHeight: '100vh', padding: '32px 40px', maxWidth: '1440px', margin: '0 auto', background: '#000' }}>
       <style>{`
@@ -503,9 +447,18 @@ export default function LuxuryRedDashboard() {
           </>
         )}
         <p style={{ marginTop: '8px', fontSize: '13px' }}>
-          Salud: {healthFromApi ? 'estimación recibida de la API' : 'valor de demostración'}.
+          Salud: {healthFromApi ? 'estimación basada en telemetría almacenada' : 'evaluación no disponible'}.
           {' '}Instrumentos: {telemetryFromApi ? 'última lectura recibida de la API para este vehículo' : 'sin lectura para el vehículo seleccionado'}.
         </p>
+        {healthIssue && <p role="status">{healthIssue}</p>}
+        {healthFromApi && health && (
+          <p style={{ marginTop: '8px', fontSize: '13px' }}>
+            Muestras utilizadas: {health.sample_count}. Origen declarado: {
+              { simulated: 'simulado', live: 'sensor OBD', mixed: 'mixto', unknown: 'desconocido' }[health.telemetry_origin]
+            }. Método: {health.model_used === 'LSTM_NeuralNetwork' ? 'modelo LSTM' : 'estimación heurística'}.
+            {' '}El origen se basa en metadatos y no verifica una conexión física.
+          </p>
+        )}
       </div>
       {/* --- Top Red Racing Header --- */}
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px', flexWrap: 'wrap', gap: '20px' }}>
@@ -610,8 +563,8 @@ export default function LuxuryRedDashboard() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
           <div style={{ textAlign: 'right' }}>
             <span style={{ fontSize: '11px', color: '#a1a1aa', textTransform: 'uppercase', fontWeight: 700 }}>AI Predicted Vehicle Health</span>
-            <div style={{ fontSize: '36px', fontWeight: 900, color: (health?.overall_health_score ?? 95) >= 80 ? '#43e97b' : (health?.overall_health_score ?? 95) >= 60 ? '#ff758c' : '#ff0844' }}>
-              {health?.overall_health_score ?? 95}%
+            <div style={{ fontSize: '36px', fontWeight: 900, color: !health ? '#a1a1aa' : health.overall_health_score >= 80 ? '#43e97b' : health.overall_health_score >= 60 ? '#ff758c' : '#ff0844' }}>
+              {health ? `${health.overall_health_score}%` : '—'}
             </div>
           </div>
         </div>
@@ -669,40 +622,40 @@ export default function LuxuryRedDashboard() {
         <div className="luxury-glass" style={{ padding: '24px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
             <span style={{ fontWeight: 700, color: '#fff', fontSize: '15px' }}>Brake System Pad Lifespan</span>
-            <span style={{ fontWeight: 900, fontSize: '18px', color: (health?.component_scores?.brake_health ?? 95) > 70 ? '#43e97b' : '#ff0844' }}>
-              {health?.component_scores?.brake_health ?? 95}%
+            <span style={{ fontWeight: 900, fontSize: '18px', color: brakeStatus.color }}>
+              {brakeStatus.level === 'unavailable' ? '—' : `${health?.component_scores?.brake_health}%`}
             </span>
           </div>
           <div style={{ height: '8px', background: '#1e293b', borderRadius: '6px', overflow: 'hidden', marginBottom: '12px' }}>
-            <div style={{ height: '100%', width: `${health?.component_scores?.brake_health ?? 95}%`, background: (health?.component_scores?.brake_health ?? 95) > 70 ? 'linear-gradient(90deg, #43e97b, #38f9d7)' : 'linear-gradient(90deg, #ff0844, #ffb199)' }}></div>
+            <div style={{ height: '100%', width: `${brakeStatus.level === 'unavailable' ? 0 : health?.component_scores?.brake_health}%`, background: brakeStatus.color }}></div>
           </div>
-          <span style={{ fontSize: '12px', color: '#a1a1aa' }}>Braking Friction Wear: Nominal</span>
+          <span style={{ fontSize: '12px', color: brakeStatus.color }}>Estado de frenos: {brakeStatus.label}</span>
         </div>
         {/* Engine Stress */}
         <div className="luxury-glass" style={{ padding: '24px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
             <span style={{ fontWeight: 700, color: '#fff', fontSize: '15px' }}>Engine Thermal & Mechanical</span>
-            <span style={{ fontWeight: 900, fontSize: '18px', color: (health?.component_scores?.engine_health ?? 94) > 70 ? '#43e97b' : '#ff0844' }}>
-              {health?.component_scores?.engine_health ?? 94}%
+            <span style={{ fontWeight: 900, fontSize: '18px', color: engineStatus.color }}>
+              {engineStatus.level === 'unavailable' ? '—' : `${health?.component_scores?.engine_health}%`}
             </span>
           </div>
           <div style={{ height: '8px', background: '#1e293b', borderRadius: '6px', overflow: 'hidden', marginBottom: '12px' }}>
-            <div style={{ height: '100%', width: `${health?.component_scores?.engine_health ?? 94}%`, background: (health?.component_scores?.engine_health ?? 94) > 70 ? 'linear-gradient(90deg, #ff0844, #ff758c)' : 'linear-gradient(90deg, #ff0844, #ffb199)' }}></div>
+            <div style={{ height: '100%', width: `${engineStatus.level === 'unavailable' ? 0 : health?.component_scores?.engine_health}%`, background: engineStatus.color }}></div>
           </div>
-          <span style={{ fontSize: '12px', color: '#a1a1aa' }}>Thermodynamic Expansion: Stable</span>
+          <span style={{ fontSize: '12px', color: engineStatus.color }}>Estado del motor: {engineStatus.label}</span>
         </div>
         {/* Battery Health */}
         <div className="luxury-glass" style={{ padding: '24px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
             <span style={{ fontWeight: 700, color: '#fff', fontSize: '15px' }}>Battery & Charging System</span>
-            <span style={{ fontWeight: 900, fontSize: '18px', color: (health?.component_scores?.battery_health ?? 96) > 70 ? '#43e97b' : '#ff0844' }}>
-              {health?.component_scores?.battery_health ?? 96}%
+            <span style={{ fontWeight: 900, fontSize: '18px', color: batteryStatus.color }}>
+              {batteryStatus.level === 'unavailable' ? '—' : `${health?.component_scores?.battery_health}%`}
             </span>
           </div>
           <div style={{ height: '8px', background: '#1e293b', borderRadius: '6px', overflow: 'hidden', marginBottom: '12px' }}>
-            <div style={{ height: '100%', width: `${health?.component_scores?.battery_health ?? 96}%`, background: (health?.component_scores?.battery_health ?? 96) > 70 ? 'linear-gradient(90deg, #00f2fe, #4facfe)' : 'linear-gradient(90deg, #ff0844, #ffb199)' }}></div>
+            <div style={{ height: '100%', width: `${batteryStatus.level === 'unavailable' ? 0 : health?.component_scores?.battery_health}%`, background: batteryStatus.color }}></div>
           </div>
-          <span style={{ fontSize: '12px', color: '#a1a1aa' }}>12V Cell Voltage Stability: Good</span>
+          <span style={{ fontSize: '12px', color: batteryStatus.color }}>Estado de batería: {batteryStatus.label}</span>
         </div>
       </div>
       {/* --- Executive Diagnostic Findings & Step-by-Step Fix Guides --- */}
@@ -710,7 +663,7 @@ export default function LuxuryRedDashboard() {
         🛠️ Executive Maintenance Butler & Step-by-Step Fix Solutions
       </h2>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', marginBottom: '36px' }}>
-        {health.plain_language_alerts?.map((alert, idx) => (
+        {health?.plain_language_alerts?.map((alert, idx) => (
           <div key={idx} className="luxury-glass" style={{ padding: '26px', borderLeft: `6px solid ${alert.severity === 'CRITICAL' ? '#ff0844' : alert.severity === 'WARNING' ? '#ff758c' : '#00f2fe'}` }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '10px' }}>
               <h3 className="font-serif-luxury" style={{ fontSize: '20px', fontWeight: 800, color: '#fff' }}>{alert.title}</h3>

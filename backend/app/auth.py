@@ -1,6 +1,6 @@
 """
 VehicleIQ JWT Authentication Module
-Provides password hashing, JWT token issuance, and FastAPI security dependencies.
+Provides Argon2id password hashing, JWT token issuance, and FastAPI security dependencies.
 """
 
 import os
@@ -9,6 +9,8 @@ import logging
 from typing import Optional
 
 import jwt
+from pwdlib import PasswordHash
+from pwdlib.exceptions import UnknownHashError
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
@@ -19,25 +21,32 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
 
 security = HTTPBearer()
+password_hasher = PasswordHash.recommended()
 
-# In-memory user database for dev demo
+def hash_password(password: str) -> str:
+    """Hash using Argon2id; the library generates an individual random salt."""
+    return password_hasher.hash(password)
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify against the encoded hash's parameters and salt."""
+    if not isinstance(plain_password, str) or not isinstance(hashed_password, str):
+        return False
+    try:
+        return password_hasher.verify(plain_password, hashed_password)
+    except UnknownHashError:
+        # Legacy SHA-256 values and corrupt/unsupported hashes are rejected safely.
+        return False
+
+
+# In-memory demo user; store a real hash rather than a password-shaped placeholder.
+# Demo credentials: admin / VehicleIQ-demo-2026.
 USER_DB = {
     "admin": {
         "username": "admin",
         "email": "admin@vehicleiq.ai",
-        "hashed_password": "pbkdf2:sha256:admin123",
+        "hashed_password": hash_password("VehicleIQ-demo-2026"),
     }
 }
-
-def hash_password(password: str) -> str:
-    """Hash password using SHA-256 with salt."""
-    import hashlib
-    salt = "vehicleiq_salt_"
-    return "pbkdf2:sha256:" + hashlib.sha256((salt + password).encode()).hexdigest()
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify plain password against hashed password."""
-    return hash_password(plain_password) == hashed_password
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """Generates a signed JWT access token."""
